@@ -1,0 +1,742 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chunking Explorer — Ask My Documents</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.5.0/chart.umd.min.js"></script>
+  <style>
+    body { overflow-x: hidden; }
+    .doc-view { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.7; }
+    .chunk-span { border-radius: 2px; transition: outline-color .1s; outline: 2px solid transparent; }
+    .chunk-tag { display: inline-block; font: 600 10px/1 ui-monospace, monospace; color: #fff; background: #334155;
+                 border-radius: 3px; padding: 2px 3px; margin: 0 2px; vertical-align: 1px; cursor: default; }
+    .chunk-tag[data-rank]::after { content: " ★" attr(data-rank); color: #fde047; }
+    .chunk-span.hover, .chunk-tag.hover { outline-color: #1e293b; }
+    .chunk-span.topk { outline: 3px solid #4f46e5; }
+    .card.hover { box-shadow: 0 0 0 2px #1e293b; }
+    .vec-cell { width: 14px; height: 14px; border-radius: 2px; border: 1px solid #e2e8f0; flex: none; }
+    .heat-grid { display: grid; grid-template-columns: repeat(16, 14px); gap: 1px; }
+    .heat-grid div { width: 14px; height: 14px; }
+    .spinner { width: 16px; height: 16px; border: 2px solid #c7d2fe; border-top-color: #4f46e5; border-radius: 50%;
+               animation: spin .8s linear infinite; display: inline-block; vertical-align: -3px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    details.info > summary { list-style: none; cursor: pointer; }
+    details.info > summary::-webkit-details-marker { display: none; }
+  </style>
+</head>
+<body class="bg-slate-100 text-slate-800 antialiased">
+
+<!-- ===================== Header ===================== -->
+<header class="bg-white border-b border-slate-200 sticky top-0 z-20">
+  <div class="max-w-6xl mx-auto px-4 py-3 flex flex-wrap items-center gap-x-4 gap-y-1">
+    <a href="/" data-testid="ex-back-link" class="text-indigo-600 hover:text-indigo-800 font-medium text-sm">← Back to chat</a>
+    <h1 class="font-semibold text-base sm:text-lg flex-1 min-w-0">Chunking &amp; Vector DB Explorer</h1>
+    <div class="text-xs text-slate-500 min-w-0 truncate">
+      Collection <code data-testid="ex-collection-name" class="text-slate-700">—</code>
+      · <span data-testid="ex-header-count">0</span> chunks
+    </div>
+  </div>
+</header>
+
+<main class="max-w-6xl mx-auto px-4 py-6 space-y-2">
+
+  <!-- ===================== Panel 1 ===================== -->
+  <section class="bg-white rounded-xl shadow-sm border border-slate-200 p-4 sm:p-5">
+    <div class="flex items-center gap-3 mb-3">
+      <span class="w-8 h-8 rounded-full bg-indigo-600 text-white flex items-center justify-center font-semibold shrink-0">1</span>
+      <h2 class="text-lg font-semibold">Upload &amp; Parse</h2>
+    </div>
+    <details class="info mb-3 text-sm bg-sky-50 border border-sky-100 rounded-lg px-3 py-2">
+      <summary class="text-sky-800 font-medium">ℹ️ What's happening here?</summary>
+      <p class="mt-1 text-sky-900">A PDF is not text — it is drawing instructions. We ask <code>pypdf</code> to pull the text out page by page.
+        Everything after this step only ever sees this plain text, so whatever is lost here (layout, tables, images) is lost for good.</p>
+    </details>
+    <div id="dropzone" class="border-2 border-dashed border-slate-300 rounded-lg p-5 text-center text-sm text-slate-500 transition-colors">
+      <p>Drag &amp; drop a PDF, .md or .txt file here (max 10 MB)</p>
+      <div class="mt-3 flex flex-wrap justify-center gap-2">
+        <label class="cursor-pointer border border-slate-300 rounded-md px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700">
+          Choose file <input type="file" data-testid="ex-upload-input" id="file-input" accept=".pdf,.md,.txt" class="sr-only">
+        </label>
+        <button data-testid="ex-sample-button" id="sample-btn" class="bg-indigo-600 text-white rounded-md px-3 py-1.5 hover:bg-indigo-700">
+          Use sample HR policy PDF
+        </button>
+      </div>
+    </div>
+    <p data-testid="ex-parse-error" id="parse-error" class="hidden mt-3 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2"></p>
+    <div id="parse-result" class="hidden mt-4">
+      <div class="flex flex-wrap gap-x-6 gap-y-1 text-sm mb-2">
+        <span>📄 <span id="filename" class="font-medium"></span></span>
+        <span><span data-testid="ex-page-count" id="page-count" class="font-semibold"></span> pages</span>
+        <span><span data-testid="ex-char-count" id="char-count" class="font-semibold"></span> characters</span>
+      </div>
+      <pre data-testid="ex-raw-text" id="raw-text" class="doc-view bg-slate-50 border border-slate-200 rounded-lg p-3 max-h-72 overflow-auto font-mono text-xs"></pre>
+      <p class="mt-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+        👀 Look at the <b>Summary of Leave Entitlements</b> table: after extraction it became <b>one cell per line</b>.
+        The computer doesn't see a table, only text — and the bullets became "•" characters.
+      </p>
+    </div>
+  </section>
+
+  <div class="text-center text-slate-400 text-sm">↓ <span class="text-xs">raw text</span></div>
+
+  <!-- ===================== Panel 2 ===================== -->
+  <section class="bg-white rounded-xl shadow-sm border border-slate-200 p-4 sm:p-5">
+    <div class="flex items-center gap-3 mb-3">
+      <span class="w-8 h-8 rounded-full bg-indigo-600 text-white flex items-center justify-center font-semibold shrink-0">2</span>
+      <h2 class="text-lg font-semibold">Chunking <span class="text-sm font-normal text-slate-400">(live — no embedding yet)</span></h2>
+    </div>
+    <details class="info mb-3 text-sm bg-sky-50 border border-sky-100 rounded-lg px-3 py-2">
+      <summary class="text-sky-800 font-medium">ℹ️ What's happening here?</summary>
+      <p class="mt-1 text-sky-900">The text is cut into chunks small enough to embed and to paste into a prompt. Each colour is one chunk;
+        <b>striped</b> text belongs to two chunks (the overlap), so a sentence cut at a boundary still appears whole somewhere.
+        <b>fixed</b> cuts anywhere, <b>recursive</b> prefers paragraph/sentence breaks, <b>heading</b> follows the document's sections.</p>
+    </details>
+
+    <div class="grid sm:grid-cols-3 gap-4 text-sm">
+      <fieldset>
+        <legend class="text-slate-500 mb-1">Strategy</legend>
+        <div class="flex flex-wrap gap-3">
+          <label class="flex items-center gap-1"><input type="radio" name="strategy" value="fixed" data-testid="ex-strategy-fixed"> fixed</label>
+          <label class="flex items-center gap-1"><input type="radio" name="strategy" value="recursive" data-testid="ex-strategy-recursive"> recursive</label>
+          <label class="flex items-center gap-1"><input type="radio" name="strategy" value="heading" data-testid="ex-strategy-heading" checked> heading</label>
+        </div>
+      </fieldset>
+      <label class="block">
+        <span class="text-slate-500">Chunk size: <b id="size-label" class="text-slate-800">800</b> chars</span>
+        <input type="range" min="100" max="1500" step="50" value="800" data-testid="ex-size-slider" id="size-slider" class="w-full accent-indigo-600">
+      </label>
+      <label class="block">
+        <span class="text-slate-500">Overlap: <b id="overlap-label" class="text-slate-800">100</b> chars</span>
+        <input type="range" min="0" max="300" step="10" value="100" data-testid="ex-overlap-slider" id="overlap-slider" class="w-full accent-indigo-600">
+      </label>
+    </div>
+
+    <div id="chunk-area" class="hidden mt-4">
+      <div class="flex flex-wrap gap-2 text-sm mb-3">
+        <span class="bg-slate-100 rounded-md px-2 py-1"><b data-testid="ex-chunk-count" id="chunk-count">0</b> chunks</span>
+        <span class="bg-slate-100 rounded-md px-2 py-1">avg <b id="stat-avg">0</b></span>
+        <span class="bg-slate-100 rounded-md px-2 py-1">min <b id="stat-min">0</b></span>
+        <span class="bg-slate-100 rounded-md px-2 py-1">max <b id="stat-max">0</b></span>
+        <span class="bg-amber-100 text-amber-900 rounded-md px-2 py-1">⚠ <b id="stat-warnings">0</b> warnings</span>
+        <label class="ml-auto flex items-center gap-2 text-slate-600">
+          <input type="checkbox" id="before-after" class="accent-indigo-600"> Before vs after:
+          <select id="before-after-strategy" class="border border-slate-300 rounded px-1 py-0.5 bg-white">
+            <option value="fixed">fixed</option><option value="recursive">recursive</option><option value="heading">heading</option>
+          </select>
+        </label>
+      </div>
+
+      <div id="views" class="grid gap-3">
+        <div class="min-w-0">
+          <div id="view-label" class="hidden text-xs font-medium text-slate-500 mb-1"></div>
+          <div id="doc-view" class="doc-view border border-slate-200 rounded-lg p-3 max-h-[28rem] overflow-auto"></div>
+        </div>
+        <div id="alt-view-wrap" class="hidden min-w-0">
+          <div id="alt-view-label" class="text-xs font-medium text-slate-500 mb-1"></div>
+          <div id="alt-view" class="doc-view border border-slate-200 rounded-lg p-3 max-h-[28rem] overflow-auto"></div>
+        </div>
+      </div>
+
+      <div class="grid lg:grid-cols-2 gap-4 mt-4">
+        <div class="min-w-0">
+          <h3 class="text-sm font-medium text-slate-500 mb-1">Chunk length histogram</h3>
+          <div class="relative h-56"><canvas data-testid="ex-histogram" id="histogram"></canvas></div>
+        </div>
+        <div class="min-w-0">
+          <h3 class="text-sm font-medium text-slate-500 mb-1">Chunks</h3>
+          <div id="chunk-cards" class="space-y-2 max-h-80 overflow-auto pr-1"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="text-center text-slate-400 text-sm">↓ <span class="text-xs">chunks</span></div>
+
+  <!-- ===================== Panel 3 ===================== -->
+  <section class="bg-white rounded-xl shadow-sm border border-slate-200 p-4 sm:p-5">
+    <div class="flex items-center gap-3 mb-3">
+      <span class="w-8 h-8 rounded-full bg-indigo-600 text-white flex items-center justify-center font-semibold shrink-0">3</span>
+      <h2 class="text-lg font-semibold">Embed &amp; Store in ChromaDB</h2>
+    </div>
+    <details class="info mb-3 text-sm bg-sky-50 border border-sky-100 rounded-lg px-3 py-2">
+      <summary class="text-sky-800 font-medium">ℹ️ What's happening here?</summary>
+      <p class="mt-1 text-sky-900">Each chunk goes through <code>all-MiniLM-L6-v2</code> and comes out as 384 numbers. Chroma stores four things per chunk:
+        an id, the original text, metadata (page, section…) and the vector. Below are the <i>real</i> rows read back from the database.</p>
+    </details>
+    <div class="flex flex-wrap items-center gap-3">
+      <button data-testid="ex-embed-button" id="embed-btn" disabled
+              class="bg-indigo-600 text-white rounded-md px-4 py-2 font-medium hover:bg-indigo-700 disabled:bg-slate-300">Embed &amp; store 0 chunks</button>
+      <span id="embed-status" data-testid="ex-embed-status" class="text-sm text-slate-500"></span>
+    </div>
+    <div id="embed-area" class="hidden mt-4 space-y-5">
+      <div>
+        <h3 class="text-sm font-medium text-slate-500 mb-1">Vector strip — first 16 of 384 dimensions
+          <span class="font-normal">(<span class="text-blue-600">blue</span> = negative, white = 0, <span class="text-red-600">red</span> = positive · click a row for all 384)</span></h3>
+        <div id="vector-strip" class="max-h-80 overflow-auto border border-slate-200 rounded-lg divide-y divide-slate-100"></div>
+      </div>
+      <div>
+        <h3 class="text-sm font-medium text-slate-500 mb-1">What Chroma actually stores</h3>
+        <div class="overflow-x-auto border border-slate-200 rounded-lg">
+          <table data-testid="ex-db-table" class="w-full text-xs">
+            <thead class="bg-slate-50 text-left text-slate-500">
+              <tr><th class="px-2 py-1.5">id</th><th class="px-2 py-1.5">document (first 80 chars)</th><th class="px-2 py-1.5">metadata</th><th class="px-2 py-1.5">embedding</th></tr>
+            </thead>
+            <tbody id="db-rows" class="divide-y divide-slate-100 align-top"></tbody>
+          </table>
+        </div>
+        <div class="flex items-center gap-2 mt-2 text-xs text-slate-500">
+          <button id="db-prev" class="border border-slate-300 rounded px-2 py-0.5 disabled:opacity-40">← Prev</button>
+          <button id="db-next" class="border border-slate-300 rounded px-2 py-0.5 disabled:opacity-40">Next →</button>
+          <span id="db-range"></span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="text-center text-slate-400 text-sm">↓ <span class="text-xs">vectors</span></div>
+
+  <!-- ===================== Panel 4 ===================== -->
+  <section class="bg-white rounded-xl shadow-sm border border-slate-200 p-4 sm:p-5">
+    <div class="flex items-center gap-3 mb-3">
+      <span class="w-8 h-8 rounded-full bg-indigo-600 text-white flex items-center justify-center font-semibold shrink-0">4</span>
+      <h2 class="text-lg font-semibold">Vector Space Map</h2>
+    </div>
+    <details class="info mb-3 text-sm bg-sky-50 border border-sky-100 rounded-lg px-3 py-2" open>
+      <summary class="text-sky-800 font-medium">ℹ️ What's happening here?</summary>
+      <p class="mt-1 text-sky-900">384 dimensions squashed to 2 (with PCA) — nearby points mean similar meaning, but the picture is only approximate.
+        Colours are document sections; after a search the query appears as a ★ with lines to its nearest chunks.</p>
+    </details>
+    <p id="map-empty" class="text-sm text-slate-400">Embed the chunks (step 3) to see the map.</p>
+    <div id="map-wrap" class="hidden relative h-[26rem]"><canvas data-testid="ex-scatter" id="scatter"></canvas></div>
+  </section>
+
+  <div class="text-center text-slate-400 text-sm">↓ <span class="text-xs">similarity search</span></div>
+
+  <!-- ===================== Panel 5 ===================== -->
+  <section class="bg-white rounded-xl shadow-sm border border-slate-200 p-4 sm:p-5">
+    <div class="flex items-center gap-3 mb-3">
+      <span class="w-8 h-8 rounded-full bg-indigo-600 text-white flex items-center justify-center font-semibold shrink-0">5</span>
+      <h2 class="text-lg font-semibold">Query Playground</h2>
+    </div>
+    <details class="info mb-3 text-sm bg-sky-50 border border-sky-100 rounded-lg px-3 py-2">
+      <summary class="text-sky-800 font-medium">ℹ️ What's happening here?</summary>
+      <p class="mt-1 text-sky-900">Your question is embedded with the same model, then compared with every chunk using cosine similarity
+        (1 = same meaning, 0 = unrelated). The top-k chunks are pasted into the prompt — that is the "Augmented" in Retrieval-Augmented Generation.
+        Tip: switch to <b>recursive / 500</b> and search the wedding question to see a section heading get cut off from its text.</p>
+    </details>
+    <div class="flex flex-wrap gap-2 mb-2 text-xs">
+      <button class="chip border border-slate-300 rounded-full px-3 py-1 hover:bg-slate-100">How many days off for my wedding?</button>
+      <button class="chip border border-slate-300 rounded-full px-3 py-1 hover:bg-slate-100">Can I carry forward sick leave?</button>
+      <button class="chip border border-slate-300 rounded-full px-3 py-1 hover:bg-slate-100">Who approves a 10-day leave?</button>
+      <button class="chip border border-slate-300 rounded-full px-3 py-1 hover:bg-slate-100">What is the cafeteria menu?</button>
+    </div>
+    <form id="query-form" class="flex flex-wrap gap-2 items-center">
+      <input data-testid="ex-query-input" id="query-input" placeholder="Ask a question about the document…"
+             class="flex-1 min-w-[12rem] border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400">
+      <label class="text-sm text-slate-500">k
+        <select data-testid="ex-k-select" id="k-select" class="border border-slate-300 rounded px-1 py-1 bg-white">
+          <option>1</option><option>2</option><option>3</option><option selected>4</option><option>5</option><option>6</option><option>7</option><option>8</option>
+        </select>
+      </label>
+      <button data-testid="ex-search-button" id="search-btn" type="submit" disabled
+              class="bg-indigo-600 text-white rounded-lg px-4 py-2 font-medium hover:bg-indigo-700 disabled:bg-slate-300">Search</button>
+    </form>
+    <div class="mt-3 flex flex-wrap items-center gap-3 text-sm">
+      <label class="flex items-center gap-2"><input type="checkbox" data-testid="ex-compare-toggle" id="compare-toggle" class="accent-indigo-600"> Compare mode</label>
+      <div id="compare-controls" class="hidden flex flex-wrap items-center gap-2 text-slate-600">
+        vs
+        <select data-testid="ex-compare-strategy" id="compare-strategy" class="border border-slate-300 rounded px-1 py-0.5 bg-white">
+          <option value="fixed">fixed</option><option value="recursive">recursive</option><option value="heading" selected>heading</option>
+        </select>
+        size <input type="number" data-testid="ex-compare-size" id="compare-size" value="200" min="100" max="1500" step="50" class="w-20 border border-slate-300 rounded px-1 py-0.5">
+        overlap <input type="number" data-testid="ex-compare-overlap" id="compare-overlap" value="50" min="0" max="300" step="10" class="w-16 border border-slate-300 rounded px-1 py-0.5">
+      </div>
+    </div>
+    <p id="query-status" class="mt-2 text-sm text-slate-500"></p>
+
+    <div id="query-area" class="hidden mt-4 space-y-5">
+      <div>
+        <h3 class="text-sm font-medium text-slate-500 mb-1">Similarity of the query to <i>every</i> chunk (top-k highlighted)</h3>
+        <div class="relative h-48"><canvas data-testid="ex-similarity-chart" id="similarity"></canvas></div>
+      </div>
+      <div id="single-results">
+        <h3 class="text-sm font-medium text-slate-500 mb-1">Top-k chunks</h3>
+        <div id="results" class="space-y-2"></div>
+      </div>
+      <div id="compare-results" class="hidden grid md:grid-cols-2 gap-4">
+        <div data-testid="ex-compare-left" id="compare-left" class="min-w-0"></div>
+        <div data-testid="ex-compare-right" id="compare-right" class="min-w-0"></div>
+      </div>
+      <div>
+        <h3 class="text-sm font-medium text-slate-500 mb-1">Prompt sent to LLM</h3>
+        <pre data-testid="ex-prompt-preview" id="prompt-preview" class="doc-view bg-slate-900 text-slate-100 rounded-lg p-3 max-h-96 overflow-auto font-mono text-xs"></pre>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+// ===========================================================================
+// Shared state + helpers
+// ===========================================================================
+const $ = (s) => document.querySelector(s);
+const state = {
+  doc: null,                // /explorer/parse response
+  chunks: [],               // current chunks (from /explorer/chunk)
+  chunkCollection: null,    // collection name for the current config
+  embedded: null,           // /explorer/embed response for the current config
+  points: {},               // chunk id -> {x, y, section, text}
+  dbOffset: 0,
+};
+const PALETTE = ["#fde68a", "#bbf7d0", "#bfdbfe", "#fbcfe8", "#ddd6fe", "#fed7aa", "#a5f3fc", "#d9f99d"];
+const SECTION_COLORS = ["#4f46e5", "#059669", "#d97706", "#db2777", "#0891b2", "#7c3aed", "#65a30d", "#dc2626",
+                        "#2563eb", "#ca8a04", "#0d9488", "#9333ea"];
+const WARNING_LABELS = { mid_sentence: "mid-sentence cut", split_table: "split table", tiny: "tiny chunk" };
+const charts = {};
+
+function escapeHtml(text) {
+  return String(text ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+async function api(path, options = {}) {
+  const res = await fetch(path, options);
+  let data = null;
+  try { data = await res.json(); } catch (_) { /* not JSON */ }
+  if (!res.ok) {
+    const detail = typeof data?.detail === "string" ? data.detail
+      : Array.isArray(data?.detail) ? data.detail.map((d) => d.msg).join("; ")
+      : data?.error || `HTTP ${res.status}`;
+    throw new Error(detail);
+  }
+  return data;
+}
+const postJson = (path, body) => api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
+function currentConfig() {
+  const size = +$("#size-slider").value;
+  let overlap = +$("#overlap-slider").value;
+  if (overlap >= size) overlap = size - 50;  // overlap must stay smaller than the chunk size
+  return { strategy: document.querySelector('input[name="strategy"]:checked').value, size, overlap };
+}
+function setHeader(collection, count) {
+  $('[data-testid="ex-collection-name"]').textContent = collection || "—";
+  $('[data-testid="ex-header-count"]').textContent = count ?? 0;
+}
+
+// ===========================================================================
+// Panel 1 — Upload & Parse
+// ===========================================================================
+function showParseError(message) {
+  const el = $("#parse-error");
+  el.textContent = `⚠️ ${message}`;
+  el.classList.remove("hidden");
+}
+async function loadDocument(promise) {
+  $("#parse-error").classList.add("hidden");
+  try {
+    setDoc(await promise);
+  } catch (err) {
+    showParseError(err.message);
+  }
+}
+function uploadFile(file) {
+  const form = new FormData();
+  form.append("file", file);
+  loadDocument(api("/explorer/parse", { method: "POST", body: form }));
+}
+function setDoc(doc) {
+  state.doc = doc;
+  state.embedded = null;
+  $("#parse-result").classList.remove("hidden");
+  $("#filename").textContent = doc.filename;
+  $("#page-count").textContent = doc.pages.length;
+  $("#char-count").textContent = doc.total_chars.toLocaleString();
+  // textContent (never innerHTML) — the document is user-supplied.
+  $("#raw-text").textContent = doc.pages.map((p) => `── Page ${p.page} ──\n${p.text}`).join("\n\n");
+  resetEmbedViews();
+  rechunk();
+}
+$("#sample-btn").addEventListener("click", () => loadDocument(api("/explorer/sample")));
+$("#file-input").addEventListener("change", (e) => { if (e.target.files[0]) uploadFile(e.target.files[0]); e.target.value = ""; });
+const dz = $("#dropzone");
+dz.addEventListener("dragover", (e) => { e.preventDefault(); dz.classList.add("border-indigo-400", "bg-indigo-50"); });
+dz.addEventListener("dragleave", () => dz.classList.remove("border-indigo-400", "bg-indigo-50"));
+dz.addEventListener("drop", (e) => {
+  e.preventDefault();
+  dz.classList.remove("border-indigo-400", "bg-indigo-50");
+  if (e.dataTransfer.files[0]) uploadFile(e.dataTransfer.files[0]);
+});
+
+// ===========================================================================
+// Panel 2 — Chunking
+// ===========================================================================
+// Render the full text once, colouring each chunk's span. Text covered by two chunks
+// (the overlap) is striped. Exactly one chunk span is emitted per chunk (possibly empty
+// if the chunk is entirely overlap), so spans, cards and the count always agree.
+function renderDocView(container, text, chunks, withTestIds) {
+  const tid = (name) => (withTestIds ? `data-testid="${name}" ` : "");
+  const color = (i) => PALETTE[i % PALETTE.length];
+  const points = [...new Set([0, text.length, ...chunks.flatMap((c) => [c.start, c.end])])].sort((a, b) => a - b);
+
+  // Which chunks cover each segment [a, b)?
+  const segments = [];
+  for (let s = 0; s + 1 < points.length; s++) {
+    const a = points[s], b = points[s + 1];
+    const cover = [];
+    chunks.forEach((c, i) => { if (c.start <= a && c.end >= b) cover.push(i); });
+    segments.push({ a, b, cover });
+  }
+  const hasOwnText = new Set(segments.filter((g) => g.cover.length === 1).map((g) => g.cover[0]));
+  const startsAt = new Map();
+  chunks.forEach((c, i) => { if (!startsAt.has(c.start)) startsAt.set(c.start, []); startsAt.get(c.start).push(i); });
+
+  const html = [];
+  for (const g of segments) {
+    for (const i of startsAt.get(g.a) || []) {
+      const c = chunks[i];
+      html.push(`<span class="chunk-tag" data-chunk-id="${c.id}">${i + 1}</span>`);
+      if (!hasOwnText.has(i)) html.push(`<span ${tid("ex-chunk-span")}class="chunk-span" data-chunk-id="${c.id}"></span>`);
+    }
+    const segText = escapeHtml(text.slice(g.a, g.b));
+    if (g.cover.length === 0) {
+      html.push(segText);
+    } else if (g.cover.length === 1) {
+      const i = g.cover[0];
+      html.push(`<span ${tid("ex-chunk-span")}class="chunk-span" data-chunk-id="${chunks[i].id}" style="background:${color(i)}">${segText}</span>`);
+    } else {
+      const [i, j] = g.cover;
+      const stripes = `repeating-linear-gradient(135deg, ${color(i)} 0 6px, ${color(j)} 6px 12px)`;
+      html.push(`<span ${tid("ex-overlap-span")}class="overlap-span" data-chunk-ids="${g.cover.map((k) => chunks[k].id).join(",")}" style="background:${stripes}" title="overlap: in ${g.cover.length} chunks">${segText}</span>`);
+    }
+  }
+  container.innerHTML = html.join("");
+}
+
+function renderCards(chunks) {
+  $("#chunk-cards").innerHTML = chunks.map((c, i) => `
+    <div data-testid="ex-chunk-card" data-chunk-id="${c.id}" class="card border border-slate-200 rounded-lg p-2 text-xs" style="border-left: 6px solid ${PALETTE[i % PALETTE.length]}">
+      <div class="flex flex-wrap items-center gap-x-2 gap-y-1 text-slate-500">
+        <b class="text-slate-800">#${i + 1} ${c.id}</b><span>p.${c.page}</span>
+        <span class="truncate max-w-[14rem]" title="${escapeHtml(c.section)}">§ ${escapeHtml(c.section)}</span>
+        <span>${c.start}–${c.end}</span><span>${c.length} chars</span>
+        ${c.overlap_with_prev ? `<span class="text-slate-400">overlap ${c.overlap_with_prev}</span>` : ""}
+        ${c.warnings.map((w) => `<span data-testid="ex-warning" class="bg-amber-100 text-amber-900 rounded px-1.5">⚠ ${WARNING_LABELS[w] || w}</span>`).join("")}
+      </div>
+      <div class="doc-view mt-1 text-slate-700 max-h-28 overflow-auto">${escapeHtml(c.text)}</div>
+    </div>`).join("");
+}
+
+function renderHistogram(lengths, target) {
+  const binWidth = Math.max(25, Math.round(target / 10 / 25) * 25);
+  const maxLen = Math.max(target, ...lengths);
+  const bins = Array.from({ length: Math.floor(maxLen / binWidth) + 1 }, (_, k) => ({ x: k * binWidth + binWidth / 2, y: 0 }));
+  lengths.forEach((len) => bins[Math.min(bins.length - 1, Math.floor(len / binWidth))].y++);
+  const targetLine = {
+    id: "targetLine",
+    afterDatasetsDraw(chart) {
+      const x = chart.scales.x.getPixelForValue(target), { top, bottom } = chart.chartArea, ctx = chart.ctx;
+      ctx.save(); ctx.strokeStyle = "#dc2626"; ctx.setLineDash([5, 4]); ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, bottom); ctx.stroke();
+      ctx.fillStyle = "#dc2626"; ctx.font = "11px sans-serif";
+      const label = `target ${target}`, w = ctx.measureText(label).width;
+      ctx.fillText(label, x + 4 + w > chart.chartArea.right ? x - 4 - w : x + 4, top + 10); ctx.restore();
+    },
+  };
+  charts.histogram?.destroy();
+  charts.histogram = new Chart($("#histogram"), {
+    type: "bar",
+    data: { datasets: [{ data: bins, backgroundColor: "#818cf8", barPercentage: 1, categoryPercentage: 1 }] },
+    options: {
+      animation: false, maintainAspectRatio: false, plugins: { legend: { display: false },
+        tooltip: { callbacks: { title: (items) => `${items[0].raw.x - binWidth / 2}–${items[0].raw.x + binWidth / 2} chars`,
+                                label: (item) => `${item.raw.y} chunks` } } },
+      scales: { x: { type: "linear", min: 0, max: (bins.length) * binWidth, title: { display: true, text: "chunk length (chars)" } },
+                y: { beginAtZero: true, ticks: { precision: 0 }, title: { display: true, text: "chunks" } } },
+    },
+    plugins: [targetLine],
+  });
+}
+
+async function rechunk() {
+  if (!state.doc) return;
+  const cfg = currentConfig();
+  $("#overlap-label").textContent = cfg.overlap;
+  try {
+    const res = await postJson("/explorer/chunk", { doc_id: state.doc.doc_id, ...cfg });
+    state.chunks = res.chunks;
+    state.chunkCollection = res.collection;
+    $("#chunk-area").classList.remove("hidden");
+    $("#chunk-count").textContent = res.stats.count;
+    $("#stat-avg").textContent = res.stats.avg;
+    $("#stat-min").textContent = res.stats.min;
+    $("#stat-max").textContent = res.stats.max;
+    $("#stat-warnings").textContent = res.warnings_count;
+    renderDocView($("#doc-view"), state.doc.full_text, res.chunks, true);
+    renderCards(res.chunks);
+    renderHistogram(res.stats.lengths, cfg.size);
+    await renderBeforeAfter();
+    // The embedding belongs to one exact config; a different config needs a new one.
+    const embeddedHere = state.embedded && state.embedded.collection === res.collection;
+    $("#embed-btn").disabled = false;
+    $("#embed-btn").textContent = embeddedHere ? `Re-embed ${res.stats.count} chunks` : `Embed & store ${res.stats.count} chunks`;
+    if (state.embedded && !embeddedHere) $("#embed-status").textContent = "Chunk settings changed — embed again to update steps 3–5.";
+    $("#search-btn").disabled = false;
+  } catch (err) {
+    showParseError(err.message);
+  }
+}
+const rechunkSoon = debounce(rechunk, 250);
+
+async function renderBeforeAfter() {
+  const on = $("#before-after").checked;
+  $("#alt-view-wrap").classList.toggle("hidden", !on);
+  $("#view-label").classList.toggle("hidden", !on);
+  $("#views").classList.toggle("lg:grid-cols-2", on);
+  if (!on || !state.doc) return;
+  const cfg = currentConfig();
+  const other = $("#before-after-strategy").value;
+  const res = await postJson("/explorer/chunk", { doc_id: state.doc.doc_id, ...cfg, strategy: other });
+  $("#view-label").textContent = `${cfg.strategy} — ${state.chunks.length} chunks, ${$("#stat-warnings").textContent} warnings`;
+  $("#alt-view-label").textContent = `${other} — ${res.stats.count} chunks, ${res.warnings_count} warnings`;
+  renderDocView($("#alt-view"), state.doc.full_text, res.chunks, false);
+}
+
+document.querySelectorAll('input[name="strategy"]').forEach((r) => r.addEventListener("change", rechunk));
+$("#size-slider").addEventListener("input", (e) => { $("#size-label").textContent = e.target.value; rechunkSoon(); });
+$("#overlap-slider").addEventListener("input", (e) => { $("#overlap-label").textContent = e.target.value; rechunkSoon(); });
+$("#before-after").addEventListener("change", renderBeforeAfter);
+$("#before-after-strategy").addEventListener("change", renderBeforeAfter);
+
+// Hovering a chunk in the text highlights its card, and vice versa.
+function setHover(id, on) {
+  document.querySelectorAll(`#doc-view [data-chunk-id="${id}"], #chunk-cards [data-chunk-id="${id}"]`)
+    .forEach((el) => el.classList.toggle("hover", on));
+}
+for (const sel of ["#doc-view", "#chunk-cards"]) {
+  $(sel).addEventListener("mouseover", (e) => { const t = e.target.closest("[data-chunk-id]"); if (t) setHover(t.dataset.chunkId, true); });
+  $(sel).addEventListener("mouseout", (e) => { const t = e.target.closest("[data-chunk-id]"); if (t) setHover(t.dataset.chunkId, false); });
+}
+
+// ===========================================================================
+// Panel 3 — Embed & store
+// ===========================================================================
+function vecColor(v) {
+  const t = Math.max(-1, Math.min(1, v / 0.15));   // MiniLM values are mostly within ±0.15
+  const mix = (a, b) => Math.round(255 + (a - 255) * Math.abs(t));
+  return t < 0 ? `rgb(${mix(37)},${mix(99)},${mix(235)})` : `rgb(${mix(220)},${mix(38)},${mix(38)})`;
+}
+function resetEmbedViews() {
+  state.embedded = null;
+  state.points = {};
+  setHeader(null, 0);
+  $("#embed-area").classList.add("hidden");
+  $("#embed-status").textContent = "";
+  $("#map-wrap").classList.add("hidden");
+  $("#map-empty").classList.remove("hidden");
+  $("#query-area").classList.add("hidden");
+  $("#query-status").textContent = "";
+}
+async function embedCurrent() {
+  const cfg = currentConfig();
+  const btn = $("#embed-btn");
+  btn.disabled = true;
+  $("#embed-status").innerHTML = `<span class="spinner"></span> Embedding ${state.chunks.length} chunks…`;
+  try {
+    const res = await postJson("/explorer/embed", { doc_id: state.doc.doc_id, ...cfg });
+    state.embedded = res;
+    state.points = Object.fromEntries(res.points.map((p) => [p.id, p]));
+    $("#embed-status").textContent = res.embed_ms
+      ? `✓ ${res.count} vectors × ${res.dims} dims in ${res.embed_ms} ms`
+      : `✓ ${res.count} vectors × ${res.dims} dims (already stored — reused)`;
+    setHeader(res.collection, res.count);
+    renderVectorStrip(res.records);
+    state.dbOffset = 0;
+    await loadDbRows();
+    renderScatter();
+    btn.textContent = `Re-embed ${res.count} chunks`;
+    $("#embed-area").classList.remove("hidden");
+    return res;
+  } catch (err) {
+    $("#embed-status").textContent = `⚠️ ${err.message}`;
+    throw err;
+  } finally {
+    btn.disabled = false;
+  }
+}
+$("#embed-btn").addEventListener("click", () => embedCurrent().catch(() => {}));
+
+function renderVectorStrip(records) {
+  $("#vector-strip").innerHTML = records.map((r) => `
+    <div data-testid="ex-vector-row" data-chunk-id="${r.id}" class="px-2 py-1.5 cursor-pointer hover:bg-slate-50">
+      <div class="flex items-center gap-2 min-w-0">
+        <code class="text-xs w-10 shrink-0">${r.id}</code>
+        <div class="flex gap-px overflow-hidden">${r.embedding_preview.map((v, d) =>
+          `<div class="vec-cell" style="background:${vecColor(v)}" title="dim ${d}: ${v}"></div>`).join("")}</div>
+        <span class="text-xs text-slate-400 whitespace-nowrap">… 368 more</span>
+        <span class="text-xs text-slate-400 whitespace-nowrap ml-auto hidden sm:inline">‖v‖ = ${r.norm.toFixed(3)}</span>
+      </div>
+      <div class="heat hidden mt-2"></div>
+    </div>`).join("");
+}
+$("#vector-strip").addEventListener("click", async (e) => {
+  const row = e.target.closest('[data-testid="ex-vector-row"]');
+  if (!row || !state.embedded) return;
+  const heat = row.querySelector(".heat");
+  if (!heat.classList.contains("hidden")) { heat.classList.add("hidden"); return; }
+  if (!heat.dataset.loaded) {
+    const { embedding } = await api(`/explorer/vector/${state.embedded.collection}/${row.dataset.chunkId}`);
+    heat.innerHTML = `<div class="text-xs text-slate-500 mb-1">All 384 dimensions (24 rows × 16)</div><div class="heat-grid">${
+      embedding.map((v, d) => `<div style="background:${vecColor(v)}" title="dim ${d}: ${v}"></div>`).join("")}</div>`;
+    heat.dataset.loaded = "1";
+  }
+  heat.classList.remove("hidden");
+});
+
+async function loadDbRows() {
+  const name = state.embedded.collection, limit = 10;
+  const res = await api(`/explorer/collection/${name}?limit=${limit}&offset=${state.dbOffset}`);
+  $("#db-rows").innerHTML = res.ids.map((id, i) => `
+    <tr data-testid="ex-db-row">
+      <td class="px-2 py-1.5 font-mono">${escapeHtml(id)}</td>
+      <td class="px-2 py-1.5 min-w-[12rem]">${escapeHtml(res.documents[i].slice(0, 80))}${res.documents[i].length > 80 ? "…" : ""}</td>
+      <td class="px-2 py-1.5 font-mono text-[11px] text-slate-600 min-w-[14rem] break-all">${escapeHtml(JSON.stringify(res.metadatas[i]))}</td>
+      <td class="px-2 py-1.5 font-mono text-[11px] text-slate-600 whitespace-nowrap">[${res.embeddings[i].slice(0, 6).map((v) => v.toFixed(3)).join(", ")}, …]</td>
+    </tr>`).join("");
+  $("#db-range").textContent = `rows ${state.dbOffset + 1}–${state.dbOffset + res.ids.length} of ${res.count}`;
+  $("#db-prev").disabled = state.dbOffset === 0;
+  $("#db-next").disabled = state.dbOffset + limit >= res.count;
+}
+$("#db-prev").addEventListener("click", () => { state.dbOffset = Math.max(0, state.dbOffset - 10); loadDbRows(); });
+$("#db-next").addEventListener("click", () => { state.dbOffset += 10; loadDbRows(); });
+
+// ===========================================================================
+// Panel 4 — Vector space map
+// ===========================================================================
+function renderScatter(query = null) {
+  $("#map-empty").classList.add("hidden");
+  $("#map-wrap").classList.remove("hidden");
+  const bySection = new Map();
+  for (const p of Object.values(state.points)) {
+    if (!bySection.has(p.section)) bySection.set(p.section, []);
+    bySection.get(p.section).push({ x: p.x, y: p.y, id: p.id, text: p.text });
+  }
+  const datasets = [...bySection.entries()].map(([section, data], i) => ({
+    label: section, data, pointRadius: 5, pointHoverRadius: 7,
+    backgroundColor: SECTION_COLORS[i % SECTION_COLORS.length],
+  }));
+  if (query) {
+    for (const r of query.results) {
+      const p = state.points[r.id];
+      if (p) datasets.push({ label: "_line", data: [query.query_point, { x: p.x, y: p.y }], showLine: true,
+                             borderColor: "rgba(15,23,42,.45)", borderDash: [4, 3], pointRadius: 0, borderWidth: 1.5 });
+    }
+    datasets.push({ label: "★ query", data: [{ ...query.query_point, id: "query", text: query.query }],
+                    pointStyle: "star", pointRadius: 14, pointHoverRadius: 16, borderColor: "#0f172a", borderWidth: 2,
+                    backgroundColor: "#facc15" });
+  }
+  charts.scatter?.destroy();
+  charts.scatter = new Chart($("#scatter"), {
+    type: "scatter",
+    data: { datasets },
+    options: {
+      animation: false, maintainAspectRatio: false,
+      plugins: {
+        legend: { position: "bottom", labels: { boxWidth: 10, font: { size: 10 }, filter: (item) => item.text !== "_line" } },
+        tooltip: { filter: (item) => item.dataset.label !== "_line",
+                   callbacks: { label: (item) => `${item.raw.id}: ${String(item.raw.text || "").slice(0, 100)}` } },
+      },
+      scales: { x: { title: { display: true, text: "PC 1" } }, y: { title: { display: true, text: "PC 2" } } },
+    },
+  });
+}
+
+// ===========================================================================
+// Panel 5 — Query playground
+// ===========================================================================
+function resultCard(r) {
+  return `
+    <div data-testid="ex-result-card" data-rank="${r.rank}" data-score="${r.score}" class="border border-slate-200 rounded-lg p-2 text-xs">
+      <div class="flex flex-wrap items-center gap-2 text-slate-500">
+        <span class="bg-indigo-600 text-white rounded px-1.5 font-semibold">#${r.rank}</span>
+        <b class="text-slate-800">score ${r.score.toFixed(3)}</b>
+        <code>${escapeHtml(r.id)}</code><span>p.${r.page ?? "?"}</span>
+        <span class="truncate max-w-[16rem]">§ ${escapeHtml(r.section ?? "")}</span>
+      </div>
+      <div class="doc-view mt-1 text-slate-700 max-h-40 overflow-auto">${escapeHtml(r.text)}</div>
+    </div>`;
+}
+function renderSimilarity(allScores, topIds) {
+  charts.similarity?.destroy();
+  charts.similarity = new Chart($("#similarity"), {
+    type: "bar",
+    data: { labels: allScores.map((s) => s.id),
+            datasets: [{ data: allScores.map((s) => s.score),
+                         backgroundColor: allScores.map((s) => (topIds.has(s.id) ? "#4f46e5" : "#cbd5e1")) }] },
+    options: { animation: false, maintainAspectRatio: false, plugins: { legend: { display: false } },
+               scales: { x: { ticks: { autoSkip: true, maxRotation: 0, font: { size: 9 } } },
+                         y: { min: Math.min(0, ...allScores.map((s) => s.score)), max: 1, title: { display: true, text: "cosine similarity" } } } },
+  });
+}
+function highlightTopK(results) {
+  document.querySelectorAll("#doc-view .topk").forEach((el) => el.classList.remove("topk"));
+  document.querySelectorAll("#doc-view .chunk-tag[data-rank]").forEach((el) => el.removeAttribute("data-rank"));
+  for (const r of results) {
+    document.querySelectorAll(`#doc-view .chunk-span[data-chunk-id="${r.id}"]`).forEach((el) => el.classList.add("topk"));
+    document.querySelectorAll(`#doc-view .chunk-tag[data-chunk-id="${r.id}"]`).forEach((el) => { el.dataset.rank = r.rank; });
+  }
+}
+function compareColumn(side) {
+  const c = side.config;
+  return `<h4 class="text-sm font-medium mb-2">${c.strategy} · size ${c.size} · overlap ${c.overlap}
+            <span class="font-normal text-slate-400">(${side.count} chunks)</span></h4>
+          <div class="space-y-2">${side.results.map(resultCard).join("")}</div>`;
+}
+async function search() {
+  const query = $("#query-input").value.trim();
+  if (!query || !state.doc) return;
+  const k = +$("#k-select").value;
+  const status = $("#query-status");
+  $("#search-btn").disabled = true;
+  try {
+    if (!state.embedded || state.embedded.collection !== state.chunkCollection) {
+      status.innerHTML = `<span class="spinner"></span> Embedding the chunks first…`;
+      await embedCurrent();
+    }
+    status.innerHTML = `<span class="spinner"></span> Searching…`;
+    const res = await postJson("/explorer/query", { collection: state.embedded.collection, query, k });
+    const compareOn = $("#compare-toggle").checked;
+    if (compareOn) {
+      const other = { strategy: $("#compare-strategy").value, size: +$("#compare-size").value, overlap: +$("#compare-overlap").value };
+      if (other.overlap >= other.size) other.overlap = Math.max(0, other.size - 50);
+      const cmp = await postJson("/explorer/compare", { doc_id: state.doc.doc_id, query, k, configs: [currentConfig(), other] });
+      $("#compare-left").innerHTML = compareColumn(cmp.left);
+      $("#compare-right").innerHTML = compareColumn(cmp.right);
+      $("#results").innerHTML = "";
+    } else {
+      $("#results").innerHTML = res.results.map(resultCard).join("");
+      $("#compare-left").innerHTML = $("#compare-right").innerHTML = "";
+    }
+    $("#single-results").classList.toggle("hidden", compareOn);
+    $("#compare-results").classList.toggle("hidden", !compareOn);
+    $("#prompt-preview").textContent = res.prompt_preview;
+    $("#query-area").classList.remove("hidden");
+    renderSimilarity(res.all_scores, new Set(res.results.map((r) => r.id)));
+    renderScatter({ ...res, query });
+    highlightTopK(res.results);
+    status.textContent = `Top ${res.results.length} of ${res.all_scores.length} chunks (best score ${res.results[0]?.score.toFixed(3)}).`;
+  } catch (err) {
+    status.textContent = `⚠️ ${err.message}`;
+  } finally {
+    $("#search-btn").disabled = false;
+  }
+}
+$("#query-form").addEventListener("submit", (e) => { e.preventDefault(); search(); });
+$("#compare-toggle").addEventListener("change", (e) => $("#compare-controls").classList.toggle("hidden", !e.target.checked));
+document.querySelectorAll(".chip").forEach((chip) => chip.addEventListener("click", () => {
+  $("#query-input").value = chip.textContent;
+  if (state.doc) search();
+}));
+</script>
+</body>
+</html>

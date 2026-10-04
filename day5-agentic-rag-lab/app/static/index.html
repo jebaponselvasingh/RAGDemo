@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ask My Documents — Day 5 Agentic AI Lab</title>
+  <!-- Tailwind via CDN: no build step, no Node.js -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    html, body { height: 100%; }
+    body { overflow-x: hidden; }
+    .msg-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+    .dot-pulse span { animation: blink 1.2s infinite both; }
+    .dot-pulse span:nth-child(2) { animation-delay: .2s; }
+    .dot-pulse span:nth-child(3) { animation-delay: .4s; }
+    @keyframes blink { 0%, 80%, 100% { opacity: .2; } 40% { opacity: 1; } }
+  </style>
+</head>
+<body class="bg-slate-100 text-slate-800 antialiased">
+<div class="flex flex-col h-full max-w-4xl mx-auto bg-white shadow-sm">
+
+  <!-- ===================== Header ===================== -->
+  <header class="border-b border-slate-200 px-4 py-3 flex flex-wrap items-center gap-x-4 gap-y-2">
+    <div class="flex items-center gap-2 min-w-0 basis-full sm:basis-auto sm:flex-1">
+      <span data-testid="health-indicator" data-status="unknown" title="Checking server..."
+            class="inline-block w-3 h-3 rounded-full bg-slate-300 shrink-0"></span>
+      <h1 class="font-semibold text-base sm:text-lg leading-tight">
+        Ask My Documents <span class="text-slate-400 font-normal text-sm sm:text-lg whitespace-nowrap">— Day 5 Agentic AI Lab</span>
+      </h1>
+    </div>
+    <div class="flex items-center gap-3 text-sm">
+      <span class="text-slate-500"><span data-testid="chunk-count" class="font-medium text-slate-700">–</span> chunks indexed</span>
+      <a href="/explorer" data-testid="explorer-link"
+         class="text-indigo-600 hover:text-indigo-800 font-medium whitespace-nowrap">Chunking Explorer →</a>
+    </div>
+  </header>
+
+  <!-- ===================== Toolbar ===================== -->
+  <div class="border-b border-slate-200 px-4 py-2 flex flex-wrap items-center gap-3 text-sm bg-slate-50">
+    <label class="flex items-center gap-2">
+      <span class="text-slate-500">Mode</span>
+      <select data-testid="mode-select" id="mode"
+              class="border border-slate-300 rounded-md px-2 py-1 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-400">
+        <option value="rag">RAG only</option>
+        <option value="agent_scratch">Agent (from scratch)</option>
+        <option value="agent_graph">Agent (LangGraph)</option>
+      </select>
+    </label>
+    <span id="mode-hint" class="text-slate-400 hidden sm:inline">Retrieve chunks, then answer from them.</span>
+    <div class="flex items-center gap-2 ml-auto min-w-0">
+      <button type="button" data-testid="new-chat" id="new-chat" title="Forget this conversation and start a new one"
+              class="border border-slate-300 rounded-md px-2 py-1 bg-white hover:bg-slate-100 whitespace-nowrap">＋ New chat</button>
+      <label class="cursor-pointer border border-slate-300 rounded-md px-2 py-1 bg-white hover:bg-slate-100 whitespace-nowrap">
+        📄 Add document
+        <input type="file" data-testid="upload-input" id="upload" accept=".pdf,.md,.txt" class="sr-only">
+      </label>
+      <span data-testid="upload-status" id="upload-status" class="text-slate-500 truncate max-w-[12rem]"></span>
+    </div>
+  </div>
+
+  <!-- ===================== Messages ===================== -->
+  <main id="messages" class="flex-1 overflow-y-auto px-4 py-4 space-y-4">
+    <div id="empty-state" class="text-center text-slate-500 mt-8">
+      <p class="text-lg font-medium text-slate-700">Ask anything about the HR leave policy</p>
+      <p class="text-sm mt-1">Try one of these:</p>
+      <div class="flex flex-wrap justify-center gap-2 mt-3 text-sm">
+        <button class="example border border-slate-300 rounded-full px-3 py-1 hover:bg-slate-100">How many days of Casual Leave per year?</button>
+        <button class="example border border-slate-300 rounded-full px-3 py-1 hover:bg-slate-100">What is 18% of 4520 plus 75?</button>
+        <button class="example border border-slate-300 rounded-full px-3 py-1 hover:bg-slate-100">Who approves a 10-day leave request?</button>
+        <button class="example border border-slate-300 rounded-full px-3 py-1 hover:bg-slate-100">What is the cafeteria menu?</button>
+      </div>
+    </div>
+  </main>
+
+  <!-- ===================== Composer ===================== -->
+  <form id="composer" class="border-t border-slate-200 px-4 py-3 flex gap-2 items-end">
+    <textarea data-testid="chat-input" id="input" rows="1" placeholder="Ask a question…" title="Enter to send, Shift+Enter for a new line"
+              class="flex-1 min-w-0 resize-none border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400"></textarea>
+    <button data-testid="send-button" id="send" type="submit" disabled
+            class="shrink-0 bg-indigo-600 text-white rounded-lg px-4 py-2 font-medium hover:bg-indigo-700 disabled:bg-slate-300 disabled:cursor-not-allowed">
+      Send
+    </button>
+  </form>
+</div>
+
+<script>
+// ---------------------------------------------------------------------------
+// Small helpers
+// ---------------------------------------------------------------------------
+const $ = (sel) => document.querySelector(sel);
+const messagesEl = $("#messages"), inputEl = $("#input"), sendEl = $("#send"), modeEl = $("#mode");
+const history = [];          // [{role, content}] sent to /chat for follow-up questions (browser-side memory)
+let inFlight = false;
+// One id per conversation. The LangGraph agent keeps its memory on the server under this id.
+const newSessionId = () => (crypto.randomUUID ? crypto.randomUUID() : `s-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+let sessionId = newSessionId();
+const emptyStateTemplate = document.getElementById("empty-state").cloneNode(true);
+
+const MODE_HINTS = {
+  rag: "Retrieve chunks, then answer from them.",
+  agent_scratch: "Hand-written ReAct loop picks a tool each step.",
+  agent_graph: "LangGraph agent with native tool calling.",
+};
+
+function escapeHtml(text) {
+  return String(text ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+// Escape first, THEN allow **bold** — so document text can never inject HTML.
+function renderText(text) {
+  return escapeHtml(text).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+}
+function el(html) {
+  const t = document.createElement("template");
+  t.innerHTML = html.trim();
+  return t.content.firstElementChild;
+}
+function scrollToBottom() { messagesEl.scrollTop = messagesEl.scrollHeight; }
+function formatLatency(ms) { return ms >= 1000 ? `${(ms / 1000).toFixed(1)} s` : `${ms} ms`; }
+
+function updateSendState() {
+  sendEl.disabled = inFlight || inputEl.value.trim() === "";
+}
+
+// ---------------------------------------------------------------------------
+// Health indicator + chunk count
+// ---------------------------------------------------------------------------
+async function refreshHealth() {
+  const dot = $('[data-testid="health-indicator"]');
+  try {
+    const res = await fetch("/health");
+    const h = await res.json();
+    const ok = res.ok && h.status === "ok";
+    dot.dataset.status = ok ? "ok" : "error";
+    dot.className = `inline-block w-3 h-3 rounded-full shrink-0 ${ok ? "bg-emerald-500" : "bg-red-500"}`;
+    dot.title = ok ? `${h.llm_provider} · ${h.model}` : (h.message || "LLM not reachable");
+    $('[data-testid="chunk-count"]').textContent = h.indexed_chunks;
+  } catch (err) {
+    dot.dataset.status = "error";
+    dot.className = "inline-block w-3 h-3 rounded-full shrink-0 bg-red-500";
+    dot.title = "Server not reachable";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Rendering messages
+// ---------------------------------------------------------------------------
+function addUserMessage(text) {
+  $("#empty-state")?.remove();
+  messagesEl.appendChild(el(`
+    <div class="flex justify-end">
+      <div data-testid="user-message" class="msg-text max-w-[85%] bg-indigo-600 text-white rounded-2xl rounded-br-sm px-4 py-2">${escapeHtml(text)}</div>
+    </div>`));
+  scrollToBottom();
+}
+
+function addThinking() {
+  const node = el(`
+    <div data-testid="thinking-indicator" class="flex">
+      <div class="bg-slate-100 text-slate-500 rounded-2xl rounded-bl-sm px-4 py-2 text-sm">
+        Thinking<span class="dot-pulse"><span>.</span><span>.</span><span>.</span></span>
+      </div>
+    </div>`);
+  messagesEl.appendChild(node);
+  scrollToBottom();
+  return node;
+}
+
+function addError(text) {
+  messagesEl.appendChild(el(`
+    <div class="flex">
+      <div data-testid="error-message" class="msg-text max-w-[85%] bg-red-50 border border-red-200 text-red-700 rounded-2xl rounded-bl-sm px-4 py-2">⚠️ ${escapeHtml(text)}</div>
+    </div>`));
+  scrollToBottom();
+}
+
+function renderTrace(trace) {
+  const steps = trace.map((s) => {
+    const badge = s.action
+      ? `<span data-testid="tool-badge" class="inline-block text-xs font-mono bg-amber-100 text-amber-800 rounded px-1.5 py-0.5">${escapeHtml(s.action)}</span>`
+      : `<span class="inline-block text-xs font-mono bg-emerald-100 text-emerald-800 rounded px-1.5 py-0.5">final answer</span>`;
+    const row = (label, value) => value == null || value === "" ? "" :
+      `<div class="mt-1"><span class="font-medium text-slate-500">${label}:</span> <span class="msg-text">${escapeHtml(value)}</span></div>`;
+    const obs = s.observation == null ? "" : `
+      <div class="mt-1"><span class="font-medium text-slate-500">Observation:</span>
+        <div class="msg-text mt-1 max-h-40 overflow-y-auto bg-slate-50 border border-slate-200 rounded p-2 font-mono text-xs">${escapeHtml(s.observation)}</div>
+      </div>`;
+    return `
+      <li data-testid="trace-step" class="border-l-2 border-indigo-200 pl-3 py-1">
+        <div class="flex items-center gap-2"><span class="text-xs text-slate-400">Step ${s.step}</span>${badge}</div>
+        ${row("Thought", s.thought)}${row("Input", s.action_input)}${obs}
+      </li>`;
+  }).join("");
+  return `<ol data-testid="trace-panel" class="hidden mt-2 space-y-2 text-sm">${steps}</ol>`;
+}
+
+function renderSources(sources) {
+  if (!sources.length) return "";
+  const items = sources.map((s) => `
+    <li>
+      <details>
+        <summary class="cursor-pointer"><span class="font-medium">${escapeHtml(s.source)}</span>
+          <span class="text-slate-400">· ${escapeHtml(s.chunk_id ?? "")} · score ${Number(s.score).toFixed(3)}</span></summary>
+        <div class="msg-text mt-1 bg-slate-50 border border-slate-200 rounded p-2 text-xs">${escapeHtml(s.text)}</div>
+      </details>
+    </li>`).join("");
+  return `
+    <div class="mt-3 text-xs text-slate-600">
+      <div class="font-medium text-slate-500 mb-1">Sources</div>
+      <ul data-testid="sources-list" class="space-y-1">${items}</ul>
+    </div>`;
+}
+
+function addAssistantMessage(data) {
+  const hasTrace = data.trace && data.trace.length > 0;
+  const node = el(`
+    <div class="flex">
+      <div data-testid="assistant-message" class="max-w-[85%] min-w-0 bg-slate-100 rounded-2xl rounded-bl-sm px-4 py-2">
+        <div class="msg-text">${renderText(data.answer)}</div>
+        ${renderSources(data.sources || [])}
+        <div class="mt-2 flex flex-wrap items-center gap-3 text-xs text-slate-500">
+          <span data-testid="latency">⏱ ${formatLatency(data.latency_ms)}</span>
+          ${data.memory_messages > 0 ? `<span data-testid="memory-indicator" title="Earlier messages the agent could see">🧠 remembers ${data.memory_messages} earlier messages</span>` : ""}
+          ${hasTrace ? `<button type="button" data-testid="trace-toggle" class="text-indigo-600 hover:text-indigo-800 font-medium">Show reasoning trace (${data.trace.length} steps)</button>` : ""}
+        </div>
+        ${hasTrace ? renderTrace(data.trace) : ""}
+      </div>
+    </div>`);
+  if (hasTrace) {
+    const toggle = node.querySelector('[data-testid="trace-toggle"]');
+    const panel = node.querySelector('[data-testid="trace-panel"]');
+    toggle.addEventListener("click", () => {
+      const hidden = panel.classList.toggle("hidden");
+      toggle.textContent = `${hidden ? "Show" : "Hide"} reasoning trace (${data.trace.length} steps)`;
+    });
+  }
+  messagesEl.appendChild(node);
+  scrollToBottom();
+}
+
+// ---------------------------------------------------------------------------
+// Sending a question
+// ---------------------------------------------------------------------------
+async function send() {
+  const message = inputEl.value.trim();
+  if (!message || inFlight) return;
+  inFlight = true;
+  inputEl.value = "";
+  updateSendState();
+  addUserMessage(message);
+  const thinking = addThinking();
+  try {
+    const res = await fetch("/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message, mode: modeEl.value, history: history.slice(-10), session_id: sessionId }),
+    });
+    let data = null;
+    try { data = await res.json(); } catch (_) { /* non-JSON error body */ }
+    if (!res.ok) {
+      const detail = data?.error || (typeof data?.detail === "string" ? data.detail : null) || `Server error (HTTP ${res.status})`;
+      throw new Error(detail);
+    }
+    addAssistantMessage(data);
+    history.push({ role: "user", content: message }, { role: "assistant", content: data.answer });
+  } catch (err) {
+    addError(err.message || "Something went wrong.");
+  } finally {
+    thinking.remove();
+    inFlight = false;
+    updateSendState();
+    inputEl.focus();
+  }
+}
+
+$("#composer").addEventListener("submit", (e) => { e.preventDefault(); send(); });
+inputEl.addEventListener("input", updateSendState);
+inputEl.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+});
+modeEl.addEventListener("change", () => { $("#mode-hint").textContent = MODE_HINTS[modeEl.value]; });
+function wireExamples(root) {
+  root.querySelectorAll(".example").forEach((b) =>
+    b.addEventListener("click", () => { inputEl.value = b.textContent; updateSendState(); inputEl.focus(); }));
+}
+wireExamples(document);
+
+// "New chat" = forget everything: the bubbles, the browser-side history and the server-side thread id.
+$("#new-chat").addEventListener("click", () => {
+  if (inFlight) return;
+  history.length = 0;
+  sessionId = newSessionId();
+  const empty = emptyStateTemplate.cloneNode(true);
+  messagesEl.replaceChildren(empty);
+  wireExamples(empty);
+  inputEl.focus();
+});
+
+// ---------------------------------------------------------------------------
+// Uploading a document
+// ---------------------------------------------------------------------------
+$("#upload").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const status = $("#upload-status");
+  status.className = "text-slate-500 truncate max-w-[12rem]";
+  status.textContent = `Uploading ${file.name}…`;
+  const form = new FormData();
+  form.append("file", file);
+  try {
+    const res = await fetch("/upload", { method: "POST", body: form });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || data.error || `HTTP ${res.status}`);
+    if (data.skipped) {
+      status.className = "text-amber-700 truncate max-w-[12rem]";
+      status.textContent = `ℹ ${data.filename} is already indexed as text`;
+      status.title = data.message;
+    } else {
+      status.className = "text-emerald-700 truncate max-w-[12rem]";
+      status.textContent = `✓ Added ${data.filename} (${data.chunks} chunks)`;
+      status.title = status.textContent;
+    }
+    await refreshHealth();
+  } catch (err) {
+    status.className = "text-red-600 truncate max-w-[12rem]";
+    status.textContent = `✗ ${err.message}`;
+    status.title = err.message;
+  } finally {
+    e.target.value = "";
+  }
+});
+
+refreshHealth();
+setInterval(refreshHealth, 15000);
+</script>
+</body>
+</html>

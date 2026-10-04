@@ -1,0 +1,4 @@
+-r requirements.txt
+pytest>=8.0,<10
+pytest-playwright>=0.5,<1
+requests>=2.31,<3

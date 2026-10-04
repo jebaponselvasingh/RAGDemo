@@ -1,0 +1,22 @@
+[
+  {"question": "How many days of Casual Leave do employees get per year?",
+   "expected_tool": "search_documents", "expected_source": "hr_leave_policy.md", "expected_keywords": ["12"]},
+  {"question": "How many days of Sick Leave can be carried forward?",
+   "expected_tool": "search_documents", "expected_source": "hr_leave_policy.md", "expected_keywords": ["24"]},
+  {"question": "How long is Paternity Leave?",
+   "expected_tool": "search_documents", "expected_source": "hr_leave_policy.md", "expected_keywords": ["10"]},
+  {"question": "Within how many days must Comp Off be used?",
+   "expected_tool": "search_documents", "expected_source": "hr_leave_policy.md", "expected_keywords": ["60"]},
+  {"question": "Who approves a leave request of 10 days?",
+   "expected_tool": "search_documents", "expected_source": "hr_leave_policy.md", "expected_keywords": ["Skip-level"]},
+  {"question": "How many days of Earned Leave does an employee earn each month?",
+   "expected_tool": "search_documents", "expected_source": "hr_leave_policy.md", "expected_keywords": ["1.5"]},
+  {"question": "What is 18% of 4520, plus 75?",
+   "expected_tool": "calculator", "expected_source": null, "expected_keywords": ["888.6"]},
+  {"question": "What is 1.5 multiplied by 8?",
+   "expected_tool": "calculator", "expected_source": null, "expected_keywords": ["12"]},
+  {"question": "What is the Maternity Benefit Act in India?",
+   "expected_tool": "wikipedia_lookup", "expected_source": null, "expected_keywords": ["1961"]},
+  {"question": "What is the cafeteria menu?",
+   "expected_tool": "search_documents", "expected_source": null, "expected_keywords": [], "expect_dont_know": true}
+]

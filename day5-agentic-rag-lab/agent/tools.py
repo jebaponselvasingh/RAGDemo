@@ -65,7 +65,7 @@ def search_documents(query: str) -> str:
     """Search the company documents (HR leave policy etc.) and return the most relevant passages.
     Use this for any question about Nexora's policies, leave rules, numbers or procedures.
     Every document is about Nexora, so do NOT put the company name in the query; use the
-    specific topic words instead, e.g. 'Paternity Leave duration'."""
+    specific topic words instead, e.g. 'Bereavement Leave documents'."""
     from rag.retriever import retrieve
 
     hits = retrieve(query)
